@@ -1,0 +1,35 @@
+# ==============================================================================
+# go2rtc — live view pipeline (substream only; sub-3s latency, zero-copy).
+#
+# Camera streams are NOT declared statically here. The backend registers and
+# removes them at runtime via go2rtc's own HTTP API (PUT/DELETE /api/streams)
+# whenever a camera is added, edited, or removed — this file only configures
+# the engine itself. Recording (mainstream, FFmpeg, 10s HLS segments on XFS)
+# is a fully separate pipeline the backend drives directly; it never goes
+# through go2rtc.
+# ==============================================================================
+
+log:
+  level: info
+  format: text
+
+api:
+  listen: ":1984"
+  # Nginx (see nginx/nginx.conf, location /live/) is the only intended public
+  # entry point; go2rtc's own API has no auth of its own, so it must never be
+  # exposed outside the compose network.
+  origin: "*"
+
+rtsp:
+  listen: ":8554"
+  # Only the backend/go2rtc-to-camera path uses RTSP; nothing external
+  # connects to this port directly.
+  username: ""
+  password: ""
+
+webrtc:
+  listen: ":8555/tcp"
+  candidates:
+    - stun:8555
+
+streams: {}

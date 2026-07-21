@@ -1,0 +1,111 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	fiberlog "github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/siliconsignals/vms/backend/internal/config"
+)
+
+func main() {
+	cfg := config.Load()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	dbPool, err := connectPostgres(ctx, cfg)
+	if err != nil {
+		log.Fatalf("postgres: %v", err)
+	}
+	defer dbPool.Close()
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr(),
+		Password: cfg.RedisPassword,
+		DB:       cfg.RedisDB,
+	})
+	defer redisClient.Close()
+
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		log.Fatalf("redis: %v", err)
+	}
+
+	app := fiber.New(fiber.Config{
+		AppName:               "vms-backend",
+		DisableStartupMessage: cfg.AppEnv == "production",
+		ReadTimeout:           15 * time.Second,
+		WriteTimeout:          15 * time.Second,
+	})
+
+	app.Use(recover.New())
+	app.Use(fiberlog.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     joinOrDefault(cfg.CORSAllowedOrigins, "*"),
+		AllowCredentials: len(cfg.CORSAllowedOrigins) > 0,
+	}))
+
+	registerHealthRoutes(app, dbPool, redisClient)
+	registerInternalRoutes(app)
+
+	api := app.Group("/api/v1")
+	registerV1Routes(api)
+
+	go func() {
+		addr := cfg.APIHost + ":" + cfg.APIPort
+		log.Printf("vms-backend listening on %s (env=%s)", addr, cfg.AppEnv)
+		if err := app.Listen(addr); err != nil {
+			log.Fatalf("fiber: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutdown signal received, draining connections...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+}
+
+func connectPostgres(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	poolCfg.MaxConns = int32(cfg.PostgresMaxOpenConn)
+	poolCfg.MinConns = int32(cfg.PostgresMaxIdleConn)
+	poolCfg.MaxConnLifetime = cfg.PostgresConnMaxLife
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+func joinOrDefault(origins []string, fallback string) string {
+	if len(origins) == 0 {
+		return fallback
+	}
+	out := origins[0]
+	for _, o := range origins[1:] {
+		out += "," + o
+	}
+	return out
+}
