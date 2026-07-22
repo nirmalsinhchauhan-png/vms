@@ -7,6 +7,12 @@
 # the engine itself. Recording (mainstream, FFmpeg, 10s HLS segments on XFS)
 # is a fully separate pipeline the backend drives directly; it never goes
 # through go2rtc.
+#
+# This is a template, not the live config: `make init` copies it to
+# go2rtc.yaml (gitignored), which go2rtc then rewrites in place as cameras
+# are added — the same .example -> real-file pattern as .env.example/.env.
+# Don't edit go2rtc.yaml expecting it to stay as you left it, and don't
+# hand-edit this template to add streams; the backend owns that at runtime.
 # ==============================================================================
 
 log:
@@ -32,4 +38,10 @@ webrtc:
   candidates:
     - stun:8555
 
-streams: {}
+# Deliberately a bare key, not `streams: {}` — go2rtc 1.9.4 has a real
+# config-patching bug where PUT /api/streams fails with a YAML parse error
+# ("did not find expected key") if the existing streams key is the flow-
+# style empty map `{}`; a bare/null key round-trips through its internal
+# patch-and-reparse logic correctly. Confirmed by isolating both forms
+# against a throwaway container — not a guess.
+streams:

@@ -15,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/siliconsignals/vms/backend/internal/auth"
 	"github.com/siliconsignals/vms/backend/internal/config"
+	appcrypto "github.com/siliconsignals/vms/backend/internal/crypto"
+	"github.com/siliconsignals/vms/backend/internal/go2rtc"
 )
 
 func main() {
@@ -41,6 +44,19 @@ func main() {
 		log.Fatalf("redis: %v", err)
 	}
 
+	jwtIssuer, err := auth.NewJWTIssuer(cfg.JWTPrivateKeyPath, cfg.JWTPublicKeyPath, cfg.JWTIssuer, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		log.Fatalf("auth: %v", err)
+	}
+
+	credKey, err := appcrypto.ParseKeyHex(cfg.CameraCredentialsEncKey)
+	if err != nil {
+		log.Fatalf("camera credentials key: %v", err)
+	}
+
+	go2rtcClient := go2rtc.NewClient(cfg.GO2RTCHost, cfg.GO2RTCAPIPort)
+	reconcileGo2RTCStreams(ctx, dbPool, go2rtcClient)
+
 	app := fiber.New(fiber.Config{
 		AppName:               "vms-backend",
 		DisableStartupMessage: cfg.AppEnv == "production",
@@ -60,6 +76,8 @@ func main() {
 
 	api := app.Group("/api/v1")
 	registerV1Routes(api)
+	registerAuthRoutes(api.Group("/auth"), dbPool, jwtIssuer, cfg)
+	registerCameraRoutes(api, dbPool, jwtIssuer, go2rtcClient, credKey, cfg)
 
 	go func() {
 		addr := cfg.APIHost + ":" + cfg.APIPort

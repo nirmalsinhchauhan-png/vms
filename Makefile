@@ -27,6 +27,7 @@ help: ## Show this help
 
 init: ## First-time setup: copy .env, generate secrets + dev TLS cert
 	@test -f $(ENV_FILE) || cp .env.example $(ENV_FILE)
+	@test -f go2rtc/go2rtc.yaml || cp go2rtc/go2rtc.example.yaml go2rtc/go2rtc.yaml
 	@$(MAKE) secrets-gen
 	@$(MAKE) tls-gen
 	@mkdir -p data/recordings
@@ -37,7 +38,8 @@ secrets-gen: ## Generate JWT RS256 keypair + placeholder license public key (dev
 	@test -f secrets/jwt_private.pem || openssl genrsa -out secrets/jwt_private.pem 4096
 	@test -f secrets/jwt_public.pem || openssl rsa -in secrets/jwt_private.pem -pubout -out secrets/jwt_public.pem
 	@test -f secrets/license_public.pem || cp secrets/jwt_public.pem secrets/license_public.pem
-	@chmod 600 secrets/jwt_private.pem
+	@chmod 640 secrets/jwt_private.pem
+	@grep -q '^SECRETS_GID=' $(ENV_FILE) 2>/dev/null || echo "SECRETS_GID=$$(id -g)" >> $(ENV_FILE)
 	@echo "Dev secrets generated in ./secrets (gitignored). Replace license_public.pem with the real vendor key before production."
 
 tls-gen: ## Generate a self-signed dev TLS certificate for nginx (dev only)

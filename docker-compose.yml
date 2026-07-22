@@ -67,9 +67,14 @@ services:
   go2rtc:
     image: alexxit/go2rtc:1.9.4
     restart: unless-stopped
+    # NOT :ro: go2rtc persists API-registered streams (PUT /api/streams)
+    # back into this same file by design — a read-only mount breaks that
+    # write mid-flight, corrupting the file and returning a YAML parse
+    # error while the stream still ends up registered in memory only,
+    # an inconsistent state only surfaced once real registration calls ran.
     volumes:
       - go2rtc_config:/config
-      - ./go2rtc/go2rtc.yaml:/config/go2rtc.yaml:ro
+      - ./go2rtc/go2rtc.yaml:/config/go2rtc.yaml
     networks:
       - vms-net
     ports:
@@ -90,14 +95,33 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env
+    # Lets the container's non-root user read jwt_private.pem (host-chmod
+    # 640, see the secrets: block below and `make secrets-gen`) via the
+    # host's own gid, without the key being world-readable on the host.
+    group_add:
+      - "${SECRETS_GID}"
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_HOST: redis
       GO2RTC_HOST: go2rtc
+    # Explicit `target:` matters: without it, Docker mounts each secret at
+    # /run/secrets/<source name> (e.g. jwt_private_key), not the source
+    # file's basename — but JWT_PRIVATE_KEY_PATH etc. in .env expect the
+    # *.pem names. Only surfaced once real code tried to read these files.
+    #
+    # Compose bind-mounts secrets preserving the HOST file's exact
+    # owner/permissions (jwt_private.pem is host-chmod 640) rather than
+    # letting `uid`/`gid`/`mode` override it in plain (non-Swarm) Compose —
+    # those fields are silently ignored here. group_add below (with
+    # SECRETS_GID from `make secrets-gen`) is what actually lets this
+    # container's non-root `vms` user read it.
     secrets:
-      - jwt_private_key
-      - jwt_public_key
-      - license_public_key
+      - source: jwt_private_key
+        target: jwt_private.pem
+      - source: jwt_public_key
+        target: jwt_public.pem
+      - source: license_public_key
+        target: license_public.pem
     volumes:
       - recordings:${RECORDING_STORAGE_PATH:-/data/recordings}
     networks:

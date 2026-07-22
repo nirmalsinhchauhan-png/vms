@@ -41,6 +41,10 @@ type Config struct {
 	GO2RTCHost    string
 	GO2RTCAPIPort string
 
+	ONVIFDiscoveryEnabled bool
+	ONVIFDiscoveryTimeout time.Duration
+	ONVIFSOAPTimeout      time.Duration
+
 	CORSAllowedOrigins []string
 }
 
@@ -78,6 +82,10 @@ func Load() Config {
 
 		GO2RTCHost:    getEnv("GO2RTC_HOST", "go2rtc"),
 		GO2RTCAPIPort: getEnv("GO2RTC_API_PORT", "1984"),
+
+		ONVIFDiscoveryEnabled: getEnvBool("ONVIF_DISCOVERY_ENABLED", true),
+		ONVIFDiscoveryTimeout: time.Duration(getEnvInt("ONVIF_DISCOVERY_TIMEOUT_SEC", 4)) * time.Second,
+		ONVIFSOAPTimeout:      time.Duration(getEnvInt("ONVIF_SOAP_TIMEOUT_SEC", 5)) * time.Second,
 
 		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 	}

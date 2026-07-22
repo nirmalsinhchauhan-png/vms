@@ -3,3 +3,4 @@ secrets/
 data/
 *.pem
 *.key
+go2rtc/go2rtc.yaml

@@ -1,27 +1,36 @@
-import { useEffect, useState } from 'react'
-import Hls from 'hls.js'
+import { type ReactNode } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthProvider } from './context/AuthContext'
+import { useAuth } from './context/useAuth'
+import Login from './pages/Login'
+import Cameras from './pages/Cameras'
 
-type ApiStatus = 'checking' | 'ok' | 'unreachable'
+function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading)
+    return <p style={{ padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>Loading…</p>
+  if (!user) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
 
 function App() {
-  const [apiStatus, setApiStatus] = useState<ApiStatus>('checking')
-
-  useEffect(() => {
-    const controller = new AbortController()
-
-    fetch(`${import.meta.env.VITE_API_BASE_URL}/v1/ping`, { signal: controller.signal })
-      .then((res) => setApiStatus(res.ok ? 'ok' : 'unreachable'))
-      .catch(() => setApiStatus('unreachable'))
-
-    return () => controller.abort()
-  }, [])
-
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem' }}>
-      <h1>{import.meta.env.VITE_APP_TITLE || 'VMS Platform'}</h1>
-      <p>Backend API: {apiStatus}</p>
-      <p>hls.js MSE support: {Hls.isSupported() ? 'yes' : 'no'}</p>
-    </main>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/cameras"
+            element={
+              <ProtectedRoute>
+                <Cameras />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/" element={<Navigate to="/cameras" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   )
 }
 
