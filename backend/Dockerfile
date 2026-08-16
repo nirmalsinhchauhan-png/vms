@@ -10,7 +10,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/vms-backend ./cmd/api
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget && \
+RUN apk add --no-cache ca-certificates wget ffmpeg && \
     addgroup -S vms && adduser -S vms -G vms
 
 COPY --from=builder /out/vms-backend /usr/local/bin/vms-backend

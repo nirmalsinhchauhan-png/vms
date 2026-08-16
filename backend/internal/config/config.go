@@ -27,12 +27,12 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 
-	JWTPrivateKeyPath   string
-	JWTPublicKeyPath    string
-	JWTIssuer           string
-	JWTAccessTokenTTL   time.Duration
-	JWTRefreshTokenTTL  time.Duration
-	JWTRefreshRotate    bool
+	JWTPrivateKeyPath  string
+	JWTPublicKeyPath   string
+	JWTIssuer          string
+	JWTAccessTokenTTL  time.Duration
+	JWTRefreshTokenTTL time.Duration
+	JWTRefreshRotate   bool
 
 	CameraCredentialsEncKey string
 	HLSTokenSecret          string
@@ -44,6 +44,15 @@ type Config struct {
 	ONVIFDiscoveryEnabled bool
 	ONVIFDiscoveryTimeout time.Duration
 	ONVIFSOAPTimeout      time.Duration
+
+	RecordingStoragePath            string
+	RecordingSegmentDurationSec     int
+	RecordingSegmentListSize        int
+	RecordingRetentionDays          int
+	RecordingFFmpegLogLevel         string
+	RecordingHWAccel                string
+	RecordingReconcileInterval      time.Duration
+	RecordingRetentionSweepInterval time.Duration
 
 	CORSAllowedOrigins []string
 }
@@ -78,7 +87,7 @@ func Load() Config {
 
 		CameraCredentialsEncKey: getEnv("CAMERA_CREDENTIALS_ENC_KEY", ""),
 		HLSTokenSecret:          getEnv("HLS_TOKEN_SECRET", ""),
-		HLSTokenTTL:             time.Duration(getEnvInt("HLS_TOKEN_TTL_SEC", 30)) * time.Second,
+		HLSTokenTTL:             time.Duration(getEnvInt("HLS_TOKEN_TTL_SEC", 300)) * time.Second,
 
 		GO2RTCHost:    getEnv("GO2RTC_HOST", "go2rtc"),
 		GO2RTCAPIPort: getEnv("GO2RTC_API_PORT", "1984"),
@@ -86,6 +95,15 @@ func Load() Config {
 		ONVIFDiscoveryEnabled: getEnvBool("ONVIF_DISCOVERY_ENABLED", true),
 		ONVIFDiscoveryTimeout: time.Duration(getEnvInt("ONVIF_DISCOVERY_TIMEOUT_SEC", 4)) * time.Second,
 		ONVIFSOAPTimeout:      time.Duration(getEnvInt("ONVIF_SOAP_TIMEOUT_SEC", 5)) * time.Second,
+
+		RecordingStoragePath:            getEnv("RECORDING_STORAGE_PATH", "/data/recordings"),
+		RecordingSegmentDurationSec:     getEnvInt("RECORDING_SEGMENT_DURATION_SEC", 10),
+		RecordingSegmentListSize:        getEnvInt("RECORDING_SEGMENT_LIST_SIZE", 6),
+		RecordingRetentionDays:          getEnvInt("RECORDING_RETENTION_DAYS", 30),
+		RecordingFFmpegLogLevel:         getEnv("RECORDING_FFMPEG_LOGLEVEL", "warning"),
+		RecordingHWAccel:                getEnv("RECORDING_HWACCEL", "none"),
+		RecordingReconcileInterval:      time.Duration(getEnvInt("RECORDING_RECONCILE_INTERVAL_SEC", 15)) * time.Second,
+		RecordingRetentionSweepInterval: time.Duration(getEnvInt("RECORDING_RETENTION_SWEEP_INTERVAL_MIN", 60)) * time.Minute,
 
 		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "")),
 	}

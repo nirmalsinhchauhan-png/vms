@@ -19,6 +19,7 @@ import (
 	"github.com/siliconsignals/vms/backend/internal/config"
 	appcrypto "github.com/siliconsignals/vms/backend/internal/crypto"
 	"github.com/siliconsignals/vms/backend/internal/go2rtc"
+	"github.com/siliconsignals/vms/backend/internal/recording"
 )
 
 func main() {
@@ -54,8 +55,23 @@ func main() {
 		log.Fatalf("camera credentials key: %v", err)
 	}
 
+	hlsKey, err := appcrypto.ParseKeyHex(cfg.HLSTokenSecret)
+	if err != nil {
+		log.Fatalf("hls token secret: %v", err)
+	}
+
 	go2rtcClient := go2rtc.NewClient(cfg.GO2RTCHost, cfg.GO2RTCAPIPort)
-	reconcileGo2RTCStreams(ctx, dbPool, go2rtcClient)
+	reconcileGo2RTCStreams(ctx, dbPool, go2rtcClient, credKey)
+
+	segWatch, err := recording.NewSegmentWatcher(dbPool, cfg.RecordingStoragePath, time.Duration(cfg.RecordingSegmentDurationSec)*time.Second)
+	if err != nil {
+		log.Fatalf("recording: %v", err)
+	}
+	go segWatch.Run(ctx)
+
+	recMgr := recording.NewManager(dbPool, cfg.RecordingStoragePath, cfg.RecordingSegmentDurationSec, cfg.RecordingFFmpegLogLevel, cfg.RecordingReconcileInterval, credKey, segWatch)
+	go recMgr.Run(ctx)
+	go recording.RunRetentionSweep(ctx, dbPool, cfg.RecordingRetentionSweepInterval, cfg.RecordingStoragePath)
 
 	app := fiber.New(fiber.Config{
 		AppName:               "vms-backend",
@@ -72,12 +88,13 @@ func main() {
 	}))
 
 	registerHealthRoutes(app, dbPool, redisClient)
-	registerInternalRoutes(app)
+	registerInternalRoutes(app, hlsKey[:])
 
 	api := app.Group("/api/v1")
 	registerV1Routes(api)
 	registerAuthRoutes(api.Group("/auth"), dbPool, jwtIssuer, cfg)
-	registerCameraRoutes(api, dbPool, jwtIssuer, go2rtcClient, credKey, cfg)
+	registerCameraRoutes(api, dbPool, jwtIssuer, go2rtcClient, credKey, cfg, recMgr)
+	registerRecordingRoutes(api, dbPool, jwtIssuer, hlsKey[:], cfg.HLSTokenTTL, recMgr)
 
 	go func() {
 		addr := cfg.APIHost + ":" + cfg.APIPort

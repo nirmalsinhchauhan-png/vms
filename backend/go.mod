@@ -3,6 +3,7 @@ module github.com/siliconsignals/vms/backend
 go 1.22
 
 require (
+	github.com/fsnotify/fsnotify v1.8.0
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.7.2

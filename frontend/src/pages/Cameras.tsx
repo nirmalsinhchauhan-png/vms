@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { apiJSON } from '../lib/api'
 import { useAuth } from '../context/useAuth'
 
@@ -185,6 +186,7 @@ export default function Cameras() {
                 <th style={{ textAlign: 'left' }}>Name</th>
                 <th style={{ textAlign: 'left' }}>IP</th>
                 <th style={{ textAlign: 'left' }}>Status</th>
+                <th />
                 {canWrite && <th />}
               </tr>
             </thead>
@@ -194,6 +196,9 @@ export default function Cameras() {
                   <td>{cam.name}</td>
                   <td>{cam.ip_address}</td>
                   <td>{cam.status}</td>
+                  <td>
+                    <Link to={`/cameras/${cam.id}/watch`}>Watch</Link>
+                  </td>
                   {canWrite && (
                     <td>
                       <button type="button" onClick={() => handleDelete(cam.id)}>

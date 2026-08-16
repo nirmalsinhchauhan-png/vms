@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -13,46 +14,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/siliconsignals/vms/backend/internal/auth"
+	"github.com/siliconsignals/vms/backend/internal/camera"
 	"github.com/siliconsignals/vms/backend/internal/config"
 	appcrypto "github.com/siliconsignals/vms/backend/internal/crypto"
 	"github.com/siliconsignals/vms/backend/internal/go2rtc"
 	"github.com/siliconsignals/vms/backend/internal/onvif"
+	"github.com/siliconsignals/vms/backend/internal/recording"
 )
 
 // registerCameraRoutes wires camera CRUD plus ONVIF probe/discover, gated
 // behind RequireAuth (all roles) and RequireRole("admin","operator") for
 // anything that writes, matching the seeded role permissions.
-func registerCameraRoutes(router fiber.Router, dbPool *pgxpool.Pool, issuer *auth.JWTIssuer, go2rtcClient *go2rtc.Client, credKey appcrypto.Key, cfg config.Config) {
+func registerCameraRoutes(router fiber.Router, dbPool *pgxpool.Pool, issuer *auth.JWTIssuer, go2rtcClient *go2rtc.Client, credKey appcrypto.Key, cfg config.Config, recMgr *recording.Manager) {
 	authed := auth.RequireAuth(issuer)
 	writeOnly := auth.RequireRole("admin", "operator")
 
 	cameras := router.Group("/cameras", authed)
 	cameras.Get("/", listCamerasHandler(dbPool))
 	cameras.Get("/:id", getCameraHandler(dbPool))
-	cameras.Post("/", writeOnly, createCameraHandler(dbPool, go2rtcClient, credKey))
-	cameras.Patch("/:id", writeOnly, updateCameraHandler(dbPool, go2rtcClient, credKey))
-	cameras.Delete("/:id", writeOnly, deleteCameraHandler(dbPool, go2rtcClient))
+	cameras.Post("/", writeOnly, createCameraHandler(dbPool, go2rtcClient, credKey, cfg, recMgr))
+	cameras.Patch("/:id", writeOnly, updateCameraHandler(dbPool, go2rtcClient, credKey, recMgr))
+	cameras.Delete("/:id", writeOnly, deleteCameraHandler(dbPool, go2rtcClient, cfg, recMgr))
 	cameras.Post("/probe", writeOnly, probeCameraHandler(cfg))
 	cameras.Post("/discover", writeOnly, discoverCamerasHandler(cfg))
 
 	router.Get("/sites", authed, listSitesHandler(dbPool))
-}
-
-type cameraCredentials struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-// encryptCredentials marshals username+password into one JSON payload and
-// encrypts it as a single AES-256-GCM plaintext — one nonce, one ciphertext,
-// per the migration 000002 fix (see that migration's comment for why two
-// separately-encrypted fields sharing one nonce was a real bug).
-func encryptCredentials(key appcrypto.Key, username, password string) (ciphertext, nonce []byte, err error) {
-	payload, err := json.Marshal(cameraCredentials{Username: username, Password: password})
-	if err != nil {
-		return nil, nil, err
-	}
-	return appcrypto.Encrypt(payload, key)
 }
 
 type cameraResponse struct {
@@ -146,7 +132,7 @@ func (r cameraWriteRequest) liveStreamURI() string {
 	return r.MainstreamURI
 }
 
-func createCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, credKey appcrypto.Key) fiber.Handler {
+func createCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, credKey appcrypto.Key, cfg config.Config, recMgr *recording.Manager) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req cameraWriteRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -158,7 +144,7 @@ func createCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cred
 
 		orgID, _ := c.Locals(auth.LocalOrganizationID).(string)
 
-		ciphertext, nonce, err := encryptCredentials(credKey, req.Username, req.Password)
+		ciphertext, nonce, err := camera.Encrypt(credKey, req.Username, req.Password)
 		if err != nil {
 			log.Printf("camera: encrypt credentials: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -183,8 +169,15 @@ func createCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cred
 		// go2rtc registration is best-effort: a temporarily-unreachable
 		// go2rtc shouldn't block camera creation. The row is persisted
 		// either way; status reflects whether registration succeeded.
+		// The live URI carries real credentials injected via net/url (not
+		// string-templated) — go2rtc cannot authenticate to the camera's
+		// RTSP server otherwise, regardless of what's stored for the camera.
 		status := "online"
-		if err := go2rtcClient.RegisterStream(c.Context(), id, req.liveStreamURI()); err != nil {
+		liveURI, err := camera.InjectAuth(req.liveStreamURI(), req.Username, req.Password)
+		if err != nil {
+			log.Printf("camera: build authenticated live URI for %s: %v", id, err)
+			status = "error"
+		} else if err := go2rtcClient.RegisterStream(c.Context(), id, liveURI); err != nil {
 			log.Printf("camera: go2rtc register (best-effort) for %s: %v", id, err)
 			status = "error"
 		}
@@ -192,11 +185,24 @@ func createCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cred
 			log.Printf("camera: set initial status: %v", err)
 		}
 
+		// Recording is on by default — matches ordinary VMS expectations,
+		// and an admin can flip mode/retention via the schedule endpoint
+		// afterward. Best-effort: a failure here shouldn't fail camera
+		// creation, same rationale as the go2rtc registration above.
+		if _, err := dbPool.Exec(c.Context(),
+			`INSERT INTO recording_schedules (camera_id, mode, retention_days) VALUES ($1, 'continuous', $2)`,
+			id, cfg.RecordingRetentionDays,
+		); err != nil {
+			log.Printf("camera: create default recording schedule for %s: %v", id, err)
+		} else {
+			recMgr.TriggerReconcile()
+		}
+
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": id, "status": status})
 	}
 }
 
-func updateCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, credKey appcrypto.Key) fiber.Handler {
+func updateCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, credKey appcrypto.Key, recMgr *recording.Manager) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 		orgID, _ := c.Locals(auth.LocalOrganizationID).(string)
@@ -209,7 +215,7 @@ func updateCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cred
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		ciphertext, nonce, err := encryptCredentials(credKey, req.Username, req.Password)
+		ciphertext, nonce, err := camera.Encrypt(credKey, req.Username, req.Password)
 		if err != nil {
 			log.Printf("camera: encrypt credentials: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -233,15 +239,23 @@ func updateCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cred
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "camera not found"})
 		}
 
-		if err := go2rtcClient.RegisterStream(c.Context(), id, req.liveStreamURI()); err != nil {
+		liveURI, err := camera.InjectAuth(req.liveStreamURI(), req.Username, req.Password)
+		if err != nil {
+			log.Printf("camera: build authenticated live URI for %s: %v", id, err)
+		} else if err := go2rtcClient.RegisterStream(c.Context(), id, liveURI); err != nil {
 			log.Printf("camera: go2rtc re-register (best-effort) for %s: %v", id, err)
 		}
+
+		// mainstream_uri and/or credentials may have changed — the recording
+		// worker needs restarting against the new config, not left running
+		// against stale credentials/URI until it happens to crash on its own.
+		recMgr.TriggerReconcile()
 
 		return c.JSON(fiber.Map{"id": id})
 	}
 }
 
-func deleteCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client) fiber.Handler {
+func deleteCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, cfg config.Config, recMgr *recording.Manager) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 		orgID, _ := c.Locals(auth.LocalOrganizationID).(string)
@@ -257,6 +271,15 @@ func deleteCameraHandler(dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client) fibe
 
 		if err := go2rtcClient.RemoveStream(c.Context(), id); err != nil {
 			log.Printf("camera: go2rtc remove (best-effort) for %s: %v", id, err)
+		}
+
+		// cameras -> recording_segments cascades away the DB *rows* on
+		// delete but leaves the *files* on disk with no record of them at
+		// all — the retention sweep can't find orphans it has no row for.
+		// Best-effort, same rationale as the go2rtc removal above.
+		recMgr.TriggerReconcile()
+		if err := os.RemoveAll(filepath.Join(cfg.RecordingStoragePath, id)); err != nil {
+			log.Printf("camera: remove recording directory for %s (best-effort): %v", id, err)
 		}
 
 		return c.SendStatus(fiber.StatusNoContent)
@@ -354,8 +377,8 @@ func listSitesHandler(dbPool *pgxpool.Pool) fiber.Handler {
 // file-persistence behavior (which has a real quirk: PUT /api/streams
 // tries to write the change back into its YAML config, which fails if
 // that file is read-only — see docker-compose.yml's go2rtc volume comment).
-func reconcileGo2RTCStreams(ctx context.Context, dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client) {
-	rows, err := dbPool.Query(ctx, `SELECT id, mainstream_uri, substream_uri FROM cameras`)
+func reconcileGo2RTCStreams(ctx context.Context, dbPool *pgxpool.Pool, go2rtcClient *go2rtc.Client, credKey appcrypto.Key) {
+	rows, err := dbPool.Query(ctx, `SELECT id, mainstream_uri, substream_uri, credential_enc, credential_nonce FROM cameras`)
 	if err != nil {
 		log.Printf("go2rtc reconcile: query cameras: %v", err)
 		return
@@ -366,7 +389,8 @@ func reconcileGo2RTCStreams(ctx context.Context, dbPool *pgxpool.Pool, go2rtcCli
 	for rows.Next() {
 		var id, mainstream string
 		var substream *string
-		if err := rows.Scan(&id, &mainstream, &substream); err != nil {
+		var credEnc, credNonce []byte
+		if err := rows.Scan(&id, &mainstream, &substream, &credEnc, &credNonce); err != nil {
 			log.Printf("go2rtc reconcile: scan: %v", err)
 			continue
 		}
@@ -374,7 +398,13 @@ func reconcileGo2RTCStreams(ctx context.Context, dbPool *pgxpool.Pool, go2rtcCli
 		if substream != nil && *substream != "" {
 			streamURI = *substream
 		}
-		if err := go2rtcClient.RegisterStream(ctx, id, streamURI); err != nil {
+		liveURI, err := camera.AuthenticatedURL(credKey, streamURI, credEnc, credNonce)
+		if err != nil {
+			log.Printf("go2rtc reconcile: build authenticated URL for %s: %v", id, err)
+			failed++
+			continue
+		}
+		if err := go2rtcClient.RegisterStream(ctx, id, liveURI); err != nil {
 			log.Printf("go2rtc reconcile: register %s: %v", id, err)
 			failed++
 			continue

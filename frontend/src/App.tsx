@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import Login from './pages/Login'
 import Cameras from './pages/Cameras'
+import LiveView from './pages/LiveView'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth()
@@ -24,6 +25,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Cameras />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cameras/:id/watch"
+            element={
+              <ProtectedRoute>
+                <LiveView />
               </ProtectedRoute>
             }
           />

@@ -14,7 +14,15 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ${RECORDING_STORAGE_PATH:-./data/recordings}
+      # Host-side bind source — deliberately a separate variable from
+      # RECORDING_STORAGE_PATH (which is the *container-internal* mount
+      # path, always /data/recordings). Reusing one variable for both
+      # meant this "device" silently resolved to the container path
+      # instead of the intended default, bind-mounting from a root-owned
+      # /data/recordings on the host itself rather than ./data/recordings
+      # in the project — nothing caught it until Sprint 3 was the first
+      # code to actually write anything here.
+      device: ${RECORDING_STORAGE_HOST_PATH:-./data/recordings}
 
 secrets:
   jwt_private_key:
@@ -158,6 +166,21 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/tls:/etc/nginx/tls:ro
+      # nginx.conf's /recordings/ location serves these files directly via
+      # `alias` — nginx needs its own mount of the same volume the backend
+      # writes into, read-only since nginx only ever serves them. This was
+      # missing since Sprint 1; nothing exercised /recordings/ until the
+      # Sprint 3 recording pipeline existed to actually write files there.
+      - recordings:${RECORDING_STORAGE_PATH:-/data/recordings}:ro
+    # No group_add here (unlike backend): nginx.conf's `user nginx;`
+    # directive makes worker processes setuid/setgid down from the root
+    # master process to the nginx:nginx system account, and that internal
+    # privilege drop resets the process's supplementary group list —
+    # confirmed directly, group_add's SECRETS_GID never survives to the
+    # actual worker. Access here relies on the recordings directories being
+    # world-traversable instead (see internal/recording/segmentwatcher.go's
+    # groupWritableMode comment) — real access control is the HMAC-signed
+    # segment token nginx's auth_request enforces, not Unix permissions.
     networks:
       - vms-net
     ports:

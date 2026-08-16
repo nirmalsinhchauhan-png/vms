@@ -31,6 +31,7 @@ init: ## First-time setup: copy .env, generate secrets + dev TLS cert
 	@$(MAKE) secrets-gen
 	@$(MAKE) tls-gen
 	@mkdir -p data/recordings
+	@chmod 2775 data/recordings
 	@echo "Edit .env with real values, then run 'make up'."
 
 secrets-gen: ## Generate JWT RS256 keypair + placeholder license public key (dev only)
